@@ -11,8 +11,10 @@
 #include <errno.h>
 #include <syslog.h>
 #include <string.h>
+#include "WPILib.h"
+#include "networktables/NetworkTable.h"
 
-using namespace std;
+//using namespace std;
 
 #define DAEMON_NAME "vdaemon"
 
@@ -20,6 +22,14 @@ using namespace std;
 void update_pixel( int pixel, unsigned char r, unsigned char g, unsigned char b );
 void write_strip( void );
 void process();
+void make_all_LEDs_red();
+void make_all_LEDs_green();
+void make_all_LEDs_blue();
+void make_all_LEDs_off();
+void make_all_LEDs_white();
+
+enum Pattern { off,white, red, green, blue, rainbow_wave };
+
 
 
 
@@ -161,86 +171,12 @@ void runLEDs( void ) {
     printf("max speed: %d Hz (%d KHz)\n", speed, speed /1000);
     printf("sizeof master_array %d\n", sizeof( master_array ) );
 
-
-    
-
-    int i;
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0xff, 0, 0 );
-        
-    }
-
-    write_strip();
-    
-
-    sleep( 1 );
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0xff, 0 );
-    }
-
-    write_strip();
-    sleep( 1 );
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0xff );
-    }
-
-    write_strip();
-    sleep( 1 );
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0 );
-    }
-
-    write_strip();
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0xff, 0, 0 );
-        write_strip();
-        usleep( 10000 );
-    }
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0 );
-    }
-
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0xff, 0 );
-        write_strip();
-        usleep( 10000 );
-    }
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0 );
-    }
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0xff );
-        write_strip();
-        usleep( 10000 );
-    }
-    
-
-    sleep( 1 );
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0 );
-    }
-
-    write_strip();
-
-
+   make_all_LEDs_red();
+   make_all_LEDs_green();
+   make_all_LEDs_blue();
+   make_all_LEDs_off();
+}
+void make_rainbow_wave(){
     int j;
     int k;
     int pos;
@@ -248,7 +184,7 @@ void runLEDs( void ) {
   for( k= 0; k < 10; k++ ) {  
     for( j = 0; j < 256; j++ ) {
 
-        for( i = 0; i < NUM_LEDS; i++ ) {
+        for(int i = 0; i < NUM_LEDS; i++ ) {
 
             pos = ( ( ( i * 256 / NUM_LEDS ) + j ) % 256 );
             if( pos < 85 ) {
@@ -269,20 +205,58 @@ void runLEDs( void ) {
         write_strip();
         usleep( 10000 );
     }
+
   }
-
-    sleep( 1 );
-
-    for( i = 0; i < NUM_LEDS; i++ ) {
-
-        update_pixel( i, 0, 0, 0 );
-    }
-
-    write_strip();
-
-
-
 }
+
+void make_all_LEDs_blue(){
+	for( int i = 0; i < NUM_LEDS; i++ ) {
+
+		update_pixel( i, 0, 0, 0xff );
+		write_strip();
+		usleep( 10000 );
+	}
+}
+
+void make_all_LEDs_off(){
+	for(int i = 0; i < NUM_LEDS; i++ ) {
+
+		update_pixel( i, 0, 0, 0 );
+	}
+}
+
+
+void make_all_LEDs_red(){
+	for( int i = 0; i < NUM_LEDS; i++ ) {
+
+		update_pixel( i, 0xff, 0, 0 );
+		write_strip();
+		usleep( 10000 );
+	}
+}
+
+
+void make_all_LEDs_green(){
+	for( int i = 0; i < NUM_LEDS; i++ ) {
+
+		update_pixel( i, 0, 0xff, 0 );
+	}
+
+	write_strip();
+	sleep( 1 );
+}
+
+
+void make_all_LEDs_white(){
+	for( int i = 0; i < NUM_LEDS; i++ ) {
+
+			update_pixel( i, 0xff, 0xff, 0xff);
+		}
+
+		write_strip();
+		sleep( 1 );
+}
+
 int main(int argc, char *argv[]) {
 
     //Set our Logging Mask and open the Log
@@ -320,10 +294,40 @@ int main(int argc, char *argv[]) {
     //----------------
     //Main Process
     //----------------
+    NetworkTable::SetClientMode();
+    NetworkTable::SetIPAddress("localhost");
+
+   std::shared_ptr<NetworkTable> table= NetworkTable::GetTable("datatable");
+
     while(true){
         process();    //Run our Process
-        runLEDs();
-        sleep(60);    //Sleep for 60 seconds
+        int ledpattern= table->GetNumber("LEDPattern",0);
+        Pattern pattern=(Pattern)ledpattern;
+        table->PutNumber("LEDPattern",(int)Pattern::off);
+        switch(pattern){
+        case Pattern::off:
+        	make_all_LEDs_off();
+        	break;
+        case Pattern::white:
+        	make_all_LEDs_white();
+        	break;
+        case Pattern::red:
+        	make_all_LEDs_red();
+        	break;
+        case Pattern::green:
+        	make_all_LEDs_green();
+        	break;
+        case Pattern:: blue:
+        	make_all_LEDs_blue();
+        	break;
+        case Pattern::rainbow_wave:
+        	make_rainbow_wave();
+        	break;
+        default:
+        	break;
+
+        }
+        sleep(1);    //Sleep for 1 seconds
     }
 
     //Close the log
