@@ -11,16 +11,26 @@
 #include <errno.h>
 #include <syslog.h>
 #include <string.h>
+#include <thread>
+#include <chrono>
+#include <condition_variable>
 #include "WPILib.h"
 #include "networktables/NetworkTable.h"
+#include "tables/ITableListener.h"
+#include <mutex>              // std::mutex, std::unique_lock
 
 //using namespace std;
 
 #define DAEMON_NAME "vdaemon"
 
-//void main( void );
+std::mutex cond_var_mtx;
+std::mutex led_pattern_mtx;
+std::condition_variable cond_var;
+
+volatile std::pair<bool,double> pending_pattern = std::make_pair(false,0.0);
+
 void update_pixel( int pixel, unsigned char r, unsigned char g, unsigned char b );
-void write_strip( void );
+bool write_strip( void );
 void process();
 void make_all_LEDs_red();
 void make_all_LEDs_green();
@@ -47,10 +57,26 @@ unsigned char r_array[ NUM_LEDS ];
 unsigned char g_array[ NUM_LEDS ];
 unsigned char b_array[ NUM_LEDS ];
 
+volatile double pattern = 0.0;
+
 int total_size = NUM_LEDS * 3;
 
 int delay = 5000;
 
+
+class LED_DataTableListener : public ITableListener {
+
+	virtual void ValueChanged(ITable* source, llvm::StringRef key, std::shared_ptr<nt::Value> value, bool isNew) {
+		//std::cout << "ValueChange called:" << std::endl;
+		double pattern = value->GetDouble();
+		//std::cout << "Pattern: " << pattern << std::endl;
+		std::unique_lock<std::mutex> lck(led_pattern_mtx);
+		pending_pattern.first = true;
+		pending_pattern.second = pattern;
+		std::unique_lock<std::mutex> cond_var_lck(cond_var_mtx);
+		cond_var.notify_all();
+	}
+};
 
 void update_pixel( int pixel, unsigned char r, unsigned char g, unsigned char b ) {
 
@@ -65,7 +91,7 @@ void update_pixel( int pixel, unsigned char r, unsigned char g, unsigned char b 
 }
 
 
-void write_strip( void ) {
+bool write_strip( void ) {
 	struct spi_ioc_transfer mesg;
 
 	int master_offset = 0;
@@ -97,6 +123,9 @@ void write_strip( void ) {
 		printf("can't send data\n");
 		perror( "error" );
 	}
+
+	std::unique_lock<std::mutex> lck(led_pattern_mtx);
+	return !pending_pattern.first;
 }
 
 
@@ -172,8 +201,9 @@ void runLEDs( void ) {
 void make_rainbow_wave() {
 	int pos;
 
-	for(int k= 0; k < 10; k++ ) {
-		for(int j = 0; j < 256; j++ ) {
+	bool continue_pattern = true;
+	for(int k= 0; k < 10 && continue_pattern; k++ ) {
+		for(int j = 0; j < 256 && continue_pattern; j++ ) {
 
 			for(int i = 0; i < NUM_LEDS; i++ ) {
 
@@ -193,7 +223,7 @@ void make_rainbow_wave() {
 					update_pixel( i, 0, pos * 3, 255 - pos * 3 );
 				}
 			}
-			write_strip();
+			continue_pattern = write_strip();
 			usleep( 10000 );
 		}
 	}
@@ -203,9 +233,9 @@ void make_rainbow_wave() {
 void make_all_LEDs_blue(){
 	for( int i = 0; i < NUM_LEDS; i++ ) {
 		update_pixel( i, 0, 0, 0xff );
-		write_strip();
-		usleep( 10000 );
 	}
+	write_strip();
+	sleep(1);
 }
 
 
@@ -213,15 +243,17 @@ void make_all_LEDs_off(){
 	for(int i = 0; i < NUM_LEDS; i++ ) {
 		update_pixel( i, 0, 0, 0 );
 	}
+	write_strip();
+	sleep(1);
 }
 
 
 void make_all_LEDs_red(){
 	for( int i = 0; i < NUM_LEDS; i++ ) {
 		update_pixel( i, 0xff, 0, 0 );
-		write_strip();
-		usleep( 10000 );
 	}
+	write_strip();
+	sleep(1);
 }
 
 
@@ -229,9 +261,8 @@ void make_all_LEDs_green(){
 	for( int i = 0; i < NUM_LEDS; i++ ) {
 		update_pixel( i, 0, 0xff, 0 );
 	}
-
 	write_strip();
-	sleep( 1 );
+	sleep(1);
 }
 
 
@@ -240,7 +271,6 @@ void make_all_LEDs_white(){
 
 		update_pixel( i, 0xff, 0xff, 0xff);
 	}
-
 	write_strip();
 	sleep( 1 );
 }
@@ -288,13 +318,34 @@ int main(int argc, char *argv[]) {
 	NetworkTable::SetClientMode();
 	NetworkTable::SetIPAddress("localhost");
 	std::shared_ptr<NetworkTable> table= NetworkTable::GetTable("datatable");
+	table->AddTableListener(new LED_DataTableListener());
 
-	while(true){
-		process();    //Run our Process
-		Pattern pattern = (Pattern)table->GetNumber("LEDPattern", 0);
-		table->PutNumber("LEDPattern", (int)Pattern::off);
+	std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
-		switch(pattern) {
+	bool pending = false;
+	double pattern = 0.0;
+	while(true) {
+		//std::cout << "Checking for new Pattern: " << std::endl;
+
+		led_pattern_mtx.lock();
+		pending = pending_pattern.first;
+		pattern = pending_pattern.second;
+		led_pattern_mtx.unlock();
+
+		if (pending) {
+			led_pattern_mtx.lock();
+			pending_pattern.first = false;
+			led_pattern_mtx.unlock();
+		} else {
+			//std::cout << "No pattern pending:" << std::endl;
+			std::unique_lock<std::mutex> lck(cond_var_mtx);
+			cond_var.wait(lck);
+			led_pattern_mtx.lock();
+			pattern = pending_pattern.second;
+			led_pattern_mtx.unlock();
+		}
+
+		switch((int)pattern) {
 		case Pattern::off:
 			make_all_LEDs_off();
 			break;
@@ -316,7 +367,6 @@ int main(int argc, char *argv[]) {
 		default:
 			break;
 		}
-		sleep(1);    //Sleep for 1 seconds
 	}
 
 	//Close the log
